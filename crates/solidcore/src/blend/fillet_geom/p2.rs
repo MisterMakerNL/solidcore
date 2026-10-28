@@ -2544,6 +2544,22 @@ impl FilletBrep {
                 surface_drop_curve(k, face_srf, &uv_domain, &c3, &c3.natural_interval(), tol)?;
             // Will replace the original UV-curve when we have only one result
             if uv_curves.len() != 1 {
+                // WR-491 (#1410): at a corner whose edge ends at a free side face the
+                // DropCurve succeeds but yields no UV curve at all (no tolerance
+                // relaxation helps). Opt-in `fixes.fillet_side_face_empty_dropcurve`:
+                // report the edge as a fillet-side-face edge, so the caller's
+                // global-merge forgiveness in `calc_corner_edge_geom_with` deletes it
+                // and the merge closes the gap, as upstream's
+                // `SM_FE_FILLET_X_SIDE_FACE` exemption would have had the corner
+                // classified that way.
+                if uv_curves.is_empty()
+                    && opt_corner.is_some()
+                    && k.fixes.fillet_side_face_empty_dropcurve
+                {
+                    if let Ok(fe) = self.fillet_edge_mut(e) {
+                        fe.edge_type = FilletEdgeType::FilletXSideFace;
+                    }
+                }
                 return Err(SolidError::sm_err(OP));
             }
             uv_curve = uv_curves.into_iter().next();
@@ -2757,7 +2773,13 @@ fn find_stepoff_uv(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blend::fillet_executive::api::circular_fillet;
+    use crate::boolean::api_brep::boolean_union;
+    use crate::error::EntityRef;
+    use crate::geom::attribute::{AttributeStore, ObjectKey};
+    use crate::mass::integrator::properties::{brep_volume, PropertyAttributes};
     use crate::nurbs::b_spline_curve::BSplineCurve;
+    use crate::primitive::api_primitives::{create_box, create_cylinder};
 
     #[test]
     fn live_solver_lookup_retains_virtuals_and_actual_identity() {
@@ -2898,9 +2920,7 @@ mod tests {
     #[test]
     fn a_setback_is_measured_from_the_filleted_vertex_with_the_fix() {
         let mut k = Kernel::default();
-        let target =
-            crate::primitive::api_primitives::create_box(&mut k, Point3::ZERO, 60.0, 40.0, 20.0)
-                .unwrap();
+        let target = create_box(&mut k, Point3::ZERO, 60.0, 40.0, 20.0).unwrap();
         let dist = 8.0;
         // (the edge runs against its curve, the distance of the setback point from where it
         // belongs) for each end of each edge of the box
@@ -2954,9 +2974,7 @@ mod tests {
     #[test]
     fn a_setback_walks_the_edges_own_interval_with_the_fix() {
         let mut k = Kernel::default();
-        let mut target =
-            crate::primitive::api_primitives::create_box(&mut k, Point3::ZERO, 60.0, 40.0, 20.0)
-                .unwrap();
+        let mut target = create_box(&mut k, Point3::ZERO, 60.0, 40.0, 20.0).unwrap();
         let (dist, past) = (8.0, 10.0);
         let edges = crate::topology::brep::p1::edges(&target, None).unwrap();
         for &e in &edges {
@@ -3093,5 +3111,54 @@ mod tests {
                 "{r:?}"
             );
         }
+    }
+
+    /// Issue #1410 (WR-491): a plate with a cylinder whose axis lies on the plate's
+    /// edge. The junction edge ends at the plate's free side face, so its free-end
+    /// corner classifies as a rail-rail interpolation corner whose `DropCurve` yields
+    /// zero UV curves; upstream raises `SM_ERR` (status 1001) for every radius because
+    /// the corner edge is not a fillet-side-face edge and the global-merge forgiveness
+    /// in `CalcCornerEdgeGeom` does not apply. Opt-in
+    /// `fixes.fillet_side_face_empty_dropcurve` reports the failing edge as a
+    /// fillet-side-face edge, the forgiveness deletes it and the merge closes the gap.
+    #[test]
+    fn the_cliff_end_fillet_refuses_without_the_side_face_fix() {
+        let mut k = Kernel::default();
+        let plate = create_box(&mut k, Point3::new(0.0, 0.0, 0.0), 100.0, 100.0, 10.0).unwrap();
+        let cyl = create_cylinder(&mut k, Point3::new(100.0, 50.0, 10.0), 20.0, 20.0).unwrap();
+        let mut b = boolean_union(&mut k, plate, cyl).unwrap();
+        // upstream: the fillet refuses with the generic upstream status 1001
+        assert!(matches!(
+            circular_fillet(&mut k, &mut b, 2.0),
+            Err(SolidError::Upstream { code: 1001, .. })
+        ));
+    }
+
+    /// The same body with `fixes.fillet_side_face_empty_dropcurve`: the fillet should
+    /// complete and close the solid. Currently ignored: the port fails **earlier**
+    /// than the C++ chain, at `calc_rail_int_rail`'s rail-rail vertex solve (a
+    /// `RailXRail` fillet vertex whose two rails never converge), before the corner
+    /// edge's `DropCurve` the fix addresses — see
+    /// `plan/findings/blend.fillet_geom_p2--plate-cylinder-cliff-end-rail-rail-vertex-divergence-1410.md`.
+    /// Unignore once that divergence is resolved.
+    #[test]
+    #[ignore = "blocked: the port fails earlier, at the rail-rail vertex solve (finding 1410 rail-rail vertex divergence)"]
+    fn the_cliff_end_fillet_completes_with_the_side_face_fix() {
+        let mut k = Kernel::default();
+        k.fixes.fillet_side_face_empty_dropcurve = true;
+        let plate = create_box(&mut k, Point3::new(0.0, 0.0, 0.0), 100.0, 100.0, 10.0).unwrap();
+        let cyl = create_cylinder(&mut k, Point3::new(100.0, 50.0, 10.0), 20.0, 20.0).unwrap();
+        let mut b = boolean_union(&mut k, plate, cyl).unwrap();
+        circular_fillet(&mut k, &mut b, 2.0).unwrap();
+        let store = AttributeStore::default();
+        let attrs = PropertyAttributes {
+            store: &store,
+            key_of: &|_: EntityRef| ObjectKey(0),
+        };
+        let vol = brep_volume(&k, &mut b, 1e-6, &attrs).unwrap();
+        // the unfilleted union is 100000 + pi*400*20 = 125132.74; the rounds on the
+        // convex rims take a little off and the concave junction fillet adds a little,
+        // so the result stays just under that (OCCT rounds the same solid to 124299)
+        assert!((123_000.0..125_100.0).contains(&vol), "volume {vol}");
     }
 }

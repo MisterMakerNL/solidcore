@@ -305,6 +305,16 @@ pub struct UpstreamFixes {
     pub ssi_tangent_contact_points: bool,
     /// `SmSurfaceIntersector` traces an open tangent curve once: `AddStartPoint` keeps one start point per cluster of tangent boundary start points (`IsSameTangentCluster`), a finished trace removes the clusters at its ends (`DoIntersection`), `TraceCurve` runs its "already traced" test on a first step that snapped onto another start point, and a near-tangent trace stops at the free end of a curve already found instead of running over it (WR-76, #392; the SolidCraft fork's tangency-labs/smlib@0ce09f2).
     pub ssi_trace_tangent_curves_once: bool,
+    /// `SmFilletEdge::CalcRailRailInterpolation`'s `DropCurve` of a corner edge's interpolated
+    /// 3-D curve onto the corner's original face succeeds but yields zero UV curves where the
+    /// edge ends at a free side face of the solid, and the `sUVCurves.GetSize() == 1` guard
+    /// raises `SM_ERR`; the corner edge is not `SM_FE_FILLET_X_SIDE_FACE`, so the global-merge
+    /// forgiveness in `SmFilletCorner::CalcCornerEdgeGeom` never deletes it and the fillet
+    /// fails with status 1001 for every radius. With the fix, the failing edge reports itself
+    /// as a fillet-side-face edge, the existing forgiveness deletes it and the merge closes
+    /// the gap (WR-491, #1410;
+    /// `plan/upstream-issues/WR-491--circular-fillet-refuses-edge-ending-at-free-face.md`).
+    pub fillet_side_face_empty_dropcurve: bool,
 }
 
 /// Options for [`Kernel::new`].
