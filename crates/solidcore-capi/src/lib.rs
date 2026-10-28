@@ -71,16 +71,16 @@ fn rot_frame(axis: Vec3, angle_deg: f64) -> (Vec3, Vec3, Vec3) {
     let n = axis.unitize_or_z();
     let th = angle_deg.to_radians();
     let (s, c) = th.sin_cos();
-    // Rodrigues, applied to the world X and Y axes; any v not parallel to n.
-    let mut v = Vec3::Y;
-    if n.x.abs() > 0.9 {
-        v = Vec3::Z;
-    }
-    let nv = n.dot(v);
-    let v_perp = v - n * nv;
-    let w = n.cross(v_perp);
-    let x = v_perp * c + w * s;
-    let y = w * c - v_perp * s;
+    // Rodrigues applied to the world X axis (full formula, handles X not ⊥ n);
+    // when n ≈ X the rotated X is parallel to the axis, so use the rotated Y
+    // as the placement x-direction instead.
+    let x = if n.x.abs() > 0.9 {
+        let y0 = Vec3::Y - n * n.y; // Y ⊥-component
+        y0 * c + n.cross(y0) * s + n * (n.y * (1.0 - c))
+    } else {
+        Vec3::X * c + n.cross(Vec3::X) * s + n * (n.x * (1.0 - c))
+    };
+    let y = n.cross(x);
     (n, x, y)
 }
 
