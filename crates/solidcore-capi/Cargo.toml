@@ -1,0 +1,15 @@
+[package]
+name = "solidcore-capi"
+description = "A minimal C ABI over the solidcore B-rep kernel (cdylib), for linking geometry kernels into non-Rust programs"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "solidcore_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+solidcore = { path = "../solidcore" }
