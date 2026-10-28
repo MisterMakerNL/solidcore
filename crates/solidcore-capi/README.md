@@ -28,6 +28,7 @@ an error code; nothing unwinds into C.
 | Function | Semantics | Errors |
 | --- | --- | --- |
 | `sc_kernel_new` / `sc_kernel_free` | create/destroy a kernel | null / — |
+| `sc_set_fixes(k, names)` | enable opt-in `Kernel::fixes` flags by name (comma-separated, NUL-terminated), before any geometry; unknown names enable nothing | 0 ok / `-1` |
 | `sc_box(k,x,y,z,sx,sy,sz)` | solid box, **corner** at `(x,y,z)`, sizes along +X/+Y/+Z | id `-1` |
 | `sc_cylinder(k,x,y,z,r,h)` | solid cylinder, base circle centre `(x,y,z)`, axis +Z | id `-1` |
 | `sc_cone(k,x,y,z,r1,r2,h)` | truncated cone, base `r1` at z, top `r2` at z+h | id `-1` |
@@ -42,6 +43,19 @@ an error code; nothing unwinds into C.
 | `sc_bbox(k,id,out)` | `out[0..5]` = xmin ymin zmin xmax ymax zmax | 0 ok / `-1` |
 | `sc_mesh(k,id,deflection,out_ptr)` | **NOT SUPPORTED** (always `-1`) | — |
 | `sc_free(p)` | free memory handed out by this library | — |
+
+### Opt-in upstream fixes
+
+Result-changing upstream-defect fixes in the kernel are opt-in
+(`Kernel::fixes`, off by default; see `plan/upstream-issues/` in the solidcore
+repo). `sc_set_fixes` enables them by field name before any B-rep is built:
+
+```c
+sc_set_fixes(k, "fillet_side_face_empty_dropcurve");  // WR-491, issue #1410
+```
+
+Unknown names return -1 and enable nothing; an empty string is a no-op that
+returns 0.
 
 ### No tessellation
 

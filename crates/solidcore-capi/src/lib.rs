@@ -15,6 +15,7 @@
 //! | Function              | Success             | Failure                |
 //! |-----------------------|---------------------|------------------------|
 //! | `sc_kernel_new`       | pointer             | null                   |
+//! | `sc_set_fixes`        | 0 (enables named `Kernel::fixes` flags) | -1 |
 //! | `sc_kernel_free`      | -                   | -                      |
 //! | `sc_box` / `sc_cylinder` / `sc_sphere` | id > 0 | -1                |
 //! | `sc_union` / `sc_difference` / `sc_intersection` | id > 0 | -1      |
@@ -139,6 +140,48 @@ pub extern "C" fn sc_kernel_new() -> *mut ScKernel {
         store: AttributeStore::default(),
     })))
     .unwrap_or(std::ptr::null_mut())
+}
+
+/// Enable named opt-in upstream fixes (`solidcore::Kernel::fixes`, an
+/// `UpstreamFixes` field each) on the kernel, before any geometry is built.
+/// `names` is a NUL-terminated, comma-separated list of field names, e.g.
+/// `"fillet_side_face_empty_dropcurve"`. Unknown names fail without enabling
+/// anything. Returns 0 on success, -1 (with `sc_last_error`) for a null kernel,
+/// a null or non-UTF-8 string, or an unknown fix name.
+///
+/// # Safety
+/// `k` must be a pointer from `sc_kernel_new`, not yet freed; `names` must point
+/// to a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn sc_set_fixes(k: *mut ScKernel, names: *const u8) -> i32 {
+    let Some(sk) = (unsafe { k.as_mut() }) else { return ERR as i32 };
+    if names.is_null() {
+        return ERR as i32;
+    }
+    let list = match std::ffi::CStr::from_ptr(names.cast()).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            LAST_ERROR.with(|c| *c.borrow_mut() = "sc_set_fixes: names is not UTF-8".into());
+            return ERR as i32;
+        }
+    };
+    for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let known = match name {
+            // WR-491, tangency-labs/solidcore#1410.
+            "fillet_side_face_empty_dropcurve" => {
+                sk.k.fixes.fillet_side_face_empty_dropcurve = true;
+                true
+            }
+            _ => false,
+        };
+        if !known {
+            LAST_ERROR.with(|c| {
+                *c.borrow_mut() = format!("sc_set_fixes: unknown fix '{name}'");
+            });
+            return ERR as i32;
+        }
+    }
+    0
 }
 
 /// # Safety
